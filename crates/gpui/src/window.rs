@@ -4449,9 +4449,29 @@ impl Window {
         frame_index: usize,
         grayscale: bool,
     ) -> Result<()> {
+        self.paint_image_fitted(bounds, bounds, corner_radii, data, frame_index, grayscale)
+    }
+
+    /// [`Self::paint_image`] for object-fit layouts: paint the `visible`
+    /// rect of an image whose fitted content box is `fitted` (equal or
+    /// larger, e.g. `ObjectFit::Cover`). The atlas tile is CROPPED to the
+    /// visible sub-rect so the sprite's bounds are exactly `visible` —
+    /// corner radii round the element's actual corners. (Cover used to
+    /// overpaint the fitted box and rely on the rectangular content mask,
+    /// which sliced off the rounding on every cropped side.)
+    pub fn paint_image_fitted(
+        &mut self,
+        visible: Bounds<Pixels>,
+        fitted: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        data: Arc<RenderImage>,
+        frame_index: usize,
+        grayscale: bool,
+    ) -> Result<()> {
         self.invalidator.debug_assert_paint();
 
-        let bounds = self.snap_bounds(bounds);
+        let crop = (visible != fitted).then_some((visible, fitted));
+        let bounds = self.snap_bounds(visible);
         let params = RenderImageParams {
             image_id: data.id,
             frame_index,
@@ -4469,6 +4489,29 @@ impl Window {
                 )))
             })?
             .expect("Callback above only returns Some");
+        // Crop the atlas tile to the visible fraction of the fitted box
+        // (proportional UV mapping; ≤1px rounding on arbitrary crops).
+        let tile = match crop {
+            Some((visible, fitted)) => {
+                let fw = f32::from(fitted.size.width).max(1.0);
+                let fh = f32::from(fitted.size.height).max(1.0);
+                let fx = (f32::from(visible.origin.x) - f32::from(fitted.origin.x)) / fw;
+                let fy = (f32::from(visible.origin.y) - f32::from(fitted.origin.y)) / fh;
+                let fsw = f32::from(visible.size.width) / fw;
+                let fsh = f32::from(visible.size.height) / fh;
+                let mut tile = tile;
+                let tw = tile.bounds.size.width.0 as f32;
+                let th = tile.bounds.size.height.0 as f32;
+                tile.bounds.origin.x =
+                    DevicePixels(tile.bounds.origin.x.0 + (fx * tw).round() as i32);
+                tile.bounds.origin.y =
+                    DevicePixels(tile.bounds.origin.y.0 + (fy * th).round() as i32);
+                tile.bounds.size.width = DevicePixels((fsw * tw).round().max(1.0) as i32);
+                tile.bounds.size.height = DevicePixels((fsh * th).round().max(1.0) as i32);
+                tile
+            }
+            None => tile,
+        };
         let content_mask = self.snapped_content_mask();
         let corner_radii = corner_radii.scale(self.scale_factor());
         // Per-pixel fade in the shader — bounds-conservative alpha blanked a
