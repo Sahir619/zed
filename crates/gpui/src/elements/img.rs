@@ -484,17 +484,23 @@ impl Element for Img {
                     if data.frame_count() == 0 {
                         return;
                     }
-                    let new_bounds = self
+                    let fitted = self
                         .style
                         .object_fit
                         .get_bounds(bounds, data.size(layout_state.frame_index));
+                    // Paint only the element-visible part of the fitted box
+                    // (Cover crops via atlas-tile UVs, so corner radii round
+                    // the element's real corners instead of being clipped off
+                    // with the overflow).
+                    let visible = bounds.intersect(&fitted);
                     let corner_radii = style
                         .corner_radii
                         .to_pixels(window.rem_size())
-                        .clamp_radii_for_quad_size(new_bounds.size);
+                        .clamp_radii_for_quad_size(visible.size);
                     window
-                        .paint_image(
-                            new_bounds,
+                        .paint_image_fitted(
+                            visible,
+                            fitted,
                             corner_radii,
                             data,
                             layout_state.frame_index,

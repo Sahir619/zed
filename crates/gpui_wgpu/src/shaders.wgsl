@@ -516,6 +516,27 @@ fn gradient_color(background: Background, position: vec2<f32>, bounds: Bounds,
 
 // --- quads --- //
 
+// Mirrors gpui's EdgeFadeParams (device pixels; zero band = edge disabled).
+struct EdgeFadeParams {
+    top_y: f32,
+    bottom_y: f32,
+    band_top: f32,
+    band_bottom: f32,
+}
+
+// Per-pixel scoped edge fade — squared ramp, matching the CPU per-glyph
+// curve. A zeroed struct is a no-op.
+fn edge_fade_alpha(y: f32, fade: EdgeFadeParams) -> f32 {
+    var ramp = 1.0;
+    if (fade.band_top > 0.0) {
+        ramp = min(ramp, clamp((y - fade.top_y) / fade.band_top, 0.0, 1.0));
+    }
+    if (fade.band_bottom > 0.0) {
+        ramp = min(ramp, clamp((fade.bottom_y - y) / fade.band_bottom, 0.0, 1.0));
+    }
+    return ramp * ramp;
+}
+
 struct Quad {
     order: u32,
     border_style: u32,
@@ -525,6 +546,7 @@ struct Quad {
     border_color: Hsla,
     corner_radii: Corners,
     border_widths: Edges,
+    fade: EdgeFadeParams,
 }
 @group(1) @binding(0) var<storage, read> b_quads: array<Quad>;
 
@@ -571,8 +593,12 @@ fn fs_quad(input: QuadVarying) -> @location(0) vec4<f32> {
 
     let quad = b_quads[input.quad_id];
 
-    let background_color = gradient_color(quad.background, input.position.xy, quad.bounds,
+    var background_color = gradient_color(quad.background, input.position.xy, quad.bounds,
         input.background_solid, input.background_color0, input.background_color1);
+    // Per-pixel scoped edge fade — applied to the fill HERE so every return
+    // path (including the fast paths) inherits it.
+    let edge_fade = edge_fade_alpha(input.position.y, quad.fade);
+    background_color.a *= edge_fade;
 
     let unrounded = quad.corner_radii.top_left == 0.0 &&
         quad.corner_radii.bottom_left == 0.0 &&
@@ -890,7 +916,7 @@ fn fs_quad(input: QuadVarying) -> @location(0) vec4<f32> {
                     saturate(antialias_threshold - inner_sdf));
     }
 
-    return blend_color(color, saturate(antialias_threshold - outer_sdf));
+    return blend_color(color, saturate(antialias_threshold - outer_sdf) * edge_fade_alpha(input.position.y, quad.fade));
 }
 
 // Returns the dash velocity of a corner given the dash velocity of the two
@@ -1269,6 +1295,7 @@ struct PolychromeSprite {
     bounds: Bounds,
     content_mask: Bounds,
     corner_radii: Corners,
+    fade: EdgeFadeParams,
     tile: AtlasTile,
 }
 @group(1) @binding(0) var<storage, read> b_poly_sprites: array<PolychromeSprite>;
@@ -1309,7 +1336,7 @@ fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
         let grayscale = dot(color.rgb, GRAYSCALE_FACTORS);
         color = vec4<f32>(vec3<f32>(grayscale), sample.a);
     }
-    return blend_color(color, sprite.opacity * saturate(0.5 - distance));
+    return blend_color(color, sprite.opacity * saturate(0.5 - distance) * edge_fade_alpha(input.position.y, sprite.fade));
 }
 
 // --- surfaces --- //

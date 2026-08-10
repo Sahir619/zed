@@ -34,6 +34,7 @@ float blur_along_x(float x, float y, float sigma, float corner,
                    float2 half_size);
 float4 over(float4 below, float4 above);
 float radians(float degrees);
+float edge_fade_alpha(float y, EdgeFadeParams fade);
 float4 fill_color(Background background, float2 position, Bounds_ScaledPixels bounds,
   float4 solid_color, float4 color0, float4 color1);
 
@@ -103,6 +104,11 @@ fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
   Quad quad = quads[input.quad_id];
   float4 background_color = fill_color(quad.background, input.position.xy, quad.bounds,
     input.background_solid, input.background_color0, input.background_color1);
+  // Per-pixel scoped edge fade — applied to the fill HERE so every return
+  // path (including the borderless fast paths) inherits it; the border
+  // fades at its own use below.
+  float edge_fade = edge_fade_alpha(input.position.y, quad.fade);
+  background_color.a *= edge_fade;
 
   bool unrounded = quad.corner_radii.top_left == 0.0 &&
     quad.corner_radii.bottom_left == 0.0 &&
@@ -211,6 +217,7 @@ fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
   float4 color = background_color;
   if (border_sdf < antialias_threshold) {
     float4 border_color = input.border_color;
+    border_color.a *= edge_fade;
 
     // Dashed border logic when border_style == 1
     if (quad.border_style == 1) {
@@ -727,7 +734,8 @@ fragment float4 polychrome_sprite_fragment(
     color.g = grayscale;
     color.b = grayscale;
   }
-  color.a *= sprite.opacity * saturate(0.5 - distance);
+  color.a *= sprite.opacity * saturate(0.5 - distance) *
+             edge_fade_alpha(input.position.y, sprite.fade);
   return color;
 }
 
@@ -1175,6 +1183,21 @@ float2x2 rotate2d(float angle) {
     float s = sin(angle);
     float c = cos(angle);
     return float2x2(c, -s, s, c);
+}
+
+// Scoped edge fade, PER PIXEL (Quad::fade / PolychromeSprite::fade): a
+// squared ramp from 0 at the fade edge to 1 a band further in, matching the
+// CPU-side per-glyph curve. Zero band = edge disabled; a zeroed struct is a
+// no-op (returns 1).
+float edge_fade_alpha(float y, EdgeFadeParams fade) {
+  float ramp = 1.0;
+  if (fade.band_top > 0.0) {
+    ramp = min(ramp, clamp((y - fade.top_y) / fade.band_top, 0.0, 1.0));
+  }
+  if (fade.band_bottom > 0.0) {
+    ramp = min(ramp, clamp((fade.bottom_y - y) / fade.band_bottom, 0.0, 1.0));
+  }
+  return ramp * ramp;
 }
 
 float4 fill_color(Background background,
