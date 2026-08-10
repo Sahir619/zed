@@ -2041,7 +2041,12 @@ fn build_pipeline_state(
     color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::SourceAlpha);
     color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
-    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::One);
+    // Alpha has to accumulate as `src.a + dst.a * (1 - src.a)`. A transparent
+    // window composites this layer over the vibrancy view by its alpha, and an
+    // additive `One` saturates to opaque wherever an antialiased edge is drawn
+    // over an already-translucent destination — punching the backdrop out of
+    // the fringe, which reads as a dark ring on every rounded corner and glyph.
+    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
 
     device
         .new_render_pipeline_state(&descriptor)
@@ -2122,7 +2127,9 @@ fn build_path_sprite_pipeline_state(
     color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
-    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::One);
+    // See `build_pipeline_state`: additive destination alpha breaks the
+    // backdrop on transparent windows.
+    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
 
     device
         .new_render_pipeline_state(&descriptor)
