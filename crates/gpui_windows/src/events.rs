@@ -332,6 +332,9 @@ impl WindowsWindowInner {
 
     fn handle_mouse_leave_msg(&self, handle: HWND) -> Option<isize> {
         self.state.hovered.set(false);
+        // Windows auto-cancels the TrackMouseEvent registration once it fires;
+        // mirror that so the next move re-arms for whichever region it is in.
+        self.state.tracking_flags.set(TRACKMOUSEEVENT_FLAGS(0));
         // The next window's `WM_SETCURSOR` picks its own cursor, so we just clear
         // the flag for tight `is_cursor_visible()` semantics.
         self.state.cursor_visible.store(true, Ordering::Relaxed);
@@ -339,16 +342,17 @@ impl WindowsWindowInner {
         // Windows has no NSMouseExited equivalent, so synthesize one: without it
         // `Window::mouse_position` freezes at the last in-client point and every
         // hitbox under that point keeps reporting hovered on each redraw (the
-        // stuck-hover flashing on caret-blink repaints). Both WM_MOUSELEAVE and
-        // WM_NCMOUSELEAVE land here; a following WM_MOUSEMOVE or WM_NCMOUSEMOVE
-        // re-establishes the true position one message later.
-        if let Some(mut func) = self.state.callbacks.input.take() {
+        // stuck-hover flashing on caret-blink repaints). But BOTH WM_MOUSELEAVE
+        // and WM_NCMOUSELEAVE also fire when the pointer merely crosses between
+        // this window's client area and its own caption band; exiting there
+        // would blink hover off for a frame on every crossing, so only
+        // synthesize when the cursor is genuinely no longer over this window.
+        let mut point = POINT::default();
+        unsafe { GetCursorPos(&mut point).log_err() };
+        let still_ours = unsafe { WindowFromPoint(point) } == handle;
+        if !still_ours && let Some(mut func) = self.state.callbacks.input.take() {
             let scale_factor = self.state.scale_factor.get();
-            let mut point = POINT::default();
-            unsafe {
-                GetCursorPos(&mut point).log_err();
-                ScreenToClient(handle, &mut point).ok().log_err();
-            }
+            unsafe { ScreenToClient(handle, &mut point).ok().log_err() };
             func(PlatformInput::MouseExited(MouseExitEvent {
                 position: logical_point(point.x as f32, point.y as f32, scale_factor),
                 pressed_button: None,
@@ -1335,8 +1339,11 @@ impl WindowsWindowInner {
     }
 
     fn start_tracking_mouse(&self, handle: HWND, flags: TRACKMOUSEEVENT_FLAGS) {
-        if !self.state.hovered.get() {
-            self.state.hovered.set(true);
+        // Re-arm whenever the requested REGION differs from what is armed,
+        // not only on first entry: client-armed TME_LEAVE cannot deliver the
+        // non-client leave that ends a titlebar hover, and vice versa.
+        if self.state.tracking_flags.get() != flags {
+            self.state.tracking_flags.set(flags);
             unsafe {
                 TrackMouseEvent(&mut TRACKMOUSEEVENT {
                     cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
@@ -1346,6 +1353,9 @@ impl WindowsWindowInner {
                 })
                 .log_err()
             };
+        }
+        if !self.state.hovered.get() {
+            self.state.hovered.set(true);
             if let Some(mut callback) = self.state.callbacks.hovered_status_change.take() {
                 callback(true);
                 self.state

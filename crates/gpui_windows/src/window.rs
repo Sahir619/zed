@@ -60,6 +60,11 @@ pub struct WindowsWindowState {
     pub last_reported_modifiers: Cell<Option<Modifiers>>,
     pub last_reported_capslock: Cell<Option<Capslock>>,
     pub hovered: Cell<bool>,
+    /// Which TrackMouseEvent registration is currently armed (zero = none).
+    /// Arming must be re-issued when the REGION changes (client vs
+    /// non-client), not only on the first entry: a client-armed TME_LEAVE
+    /// never delivers the leave that ends a titlebar hover.
+    pub tracking_flags: Cell<TRACKMOUSEEVENT_FLAGS>,
     pub direct_manipulation: DirectManipulationHandler,
 
     pub renderer: RefCell<DirectXRenderer>,
@@ -167,6 +172,7 @@ impl WindowsWindowState {
             last_reported_modifiers: Cell::new(last_reported_modifiers),
             last_reported_capslock: Cell::new(last_reported_capslock),
             hovered: Cell::new(hovered),
+            tracking_flags: Cell::new(TRACKMOUSEEVENT_FLAGS(0)),
             renderer: RefCell::new(renderer),
             force_render_after_recovery: Cell::new(false),
             click_state,
