@@ -61,7 +61,7 @@ impl WindowsWindowInner {
             WM_CLOSE => self.handle_close_msg(),
             WM_DESTROY => self.handle_destroy_msg(handle),
             WM_MOUSEMOVE => self.handle_mouse_move_msg(handle, lparam, wparam),
-            WM_MOUSELEAVE | WM_NCMOUSELEAVE => self.handle_mouse_leave_msg(),
+            WM_MOUSELEAVE | WM_NCMOUSELEAVE => self.handle_mouse_leave_msg(handle),
             WM_NCMOUSEMOVE => self.handle_nc_mouse_move_msg(handle, lparam),
             // Treat double click as a second single click, since we track the double clicks ourselves.
             // If you don't interact with any elements, this will fall through to the windows default
@@ -330,11 +330,33 @@ impl WindowsWindowInner {
         if handled { Some(0) } else { Some(1) }
     }
 
-    fn handle_mouse_leave_msg(&self) -> Option<isize> {
+    fn handle_mouse_leave_msg(&self, handle: HWND) -> Option<isize> {
         self.state.hovered.set(false);
         // The next window's `WM_SETCURSOR` picks its own cursor, so we just clear
         // the flag for tight `is_cursor_visible()` semantics.
         self.state.cursor_visible.store(true, Ordering::Relaxed);
+
+        // Windows has no NSMouseExited equivalent, so synthesize one: without it
+        // `Window::mouse_position` freezes at the last in-client point and every
+        // hitbox under that point keeps reporting hovered on each redraw (the
+        // stuck-hover flashing on caret-blink repaints). Both WM_MOUSELEAVE and
+        // WM_NCMOUSELEAVE land here; a following WM_MOUSEMOVE or WM_NCMOUSEMOVE
+        // re-establishes the true position one message later.
+        if let Some(mut func) = self.state.callbacks.input.take() {
+            let scale_factor = self.state.scale_factor.get();
+            let mut point = POINT::default();
+            unsafe {
+                GetCursorPos(&mut point).log_err();
+                ScreenToClient(handle, &mut point).ok().log_err();
+            }
+            func(PlatformInput::MouseExited(MouseExitEvent {
+                position: logical_point(point.x as f32, point.y as f32, scale_factor),
+                pressed_button: None,
+                modifiers: current_modifiers(),
+            }));
+            self.state.callbacks.input.set(Some(func));
+        }
+
         if let Some(mut callback) = self.state.callbacks.hovered_status_change.take() {
             callback(false);
             self.state
@@ -894,7 +916,21 @@ impl WindowsWindowInner {
 
         let callback = self.state.callbacks.hit_test_window_control.take();
         let drag_area = if let Some(mut callback) = callback {
-            let area = callback();
+            // Hand the callback the position THIS message carries: answering
+            // from the last dispatched position lags one message behind and
+            // makes HTCAPTION/HTCLIENT alternate at region boundaries with a
+            // stationary mouse (leave/move ping-pong, visible as flashing).
+            let scale_factor = self.state.scale_factor.get();
+            let mut cursor_point = POINT {
+                x: lparam.signed_loword().into(),
+                y: lparam.signed_hiword().into(),
+            };
+            unsafe { ScreenToClient(handle, &mut cursor_point).ok().log_err() };
+            let area = callback(logical_point(
+                cursor_point.x as f32,
+                cursor_point.y as f32,
+                scale_factor,
+            ));
             self.state
                 .callbacks
                 .hit_test_window_control

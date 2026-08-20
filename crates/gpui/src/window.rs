@@ -1668,11 +1668,17 @@ impl Window {
         });
         platform_window.on_hit_test_window_control({
             let mut cx = cx.to_async();
-            Box::new(move || {
+            Box::new(move |position| {
                 handle
                     .update(&mut cx, |_, window, _cx| {
+                        // A fresh hit test at the position the platform's
+                        // message carries: `mouse_hit_test` is the state at
+                        // the last DISPATCHED event and lags the cursor by
+                        // one message, which oscillates window-control
+                        // routing at region boundaries.
+                        let hit_test = window.rendered_frame.hit_test(position);
                         for (area, hitbox) in &window.rendered_frame.window_control_hitboxes {
-                            if window.mouse_hit_test.ids.contains(&hitbox.id) {
+                            if hit_test.ids.contains(&hitbox.id) {
                                 return Some(*area);
                             }
                         }
@@ -4986,6 +4992,10 @@ impl Window {
             }
             PlatformInput::MouseExited(mouse_exited) => {
                 self.modifiers = mouse_exited.modifiers;
+                // Track the exit position so the next draw's hit test empties
+                // instead of freezing hover at the last in-window point (the
+                // Windows backend synthesizes this event on WM_MOUSELEAVE).
+                self.mouse_position = mouse_exited.position;
                 PlatformInput::MouseExited(mouse_exited)
             }
             PlatformInput::ModifiersChanged(modifiers_changed) => {
